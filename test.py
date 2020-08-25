@@ -35,17 +35,18 @@ def run(n):
     torch.cuda.synchronize(device)
     gpu_time = time.time() - gpu_time
 
-    print("INPUT")
-    print(matrix)
-    print("EXPECTED")
-    print(torch.from_numpy(expected))
-    print("ACTUAL")
-    print(gpu_out)
+    if False:
+        print("INPUT")
+        print(matrix)
+        print("EXPECTED")
+        print(torch.from_numpy(expected))
+        print("ACTUAL")
+        print(gpu_out)
 
     # Compare outputs and print timing info
-    np.testing.assert_allclose(expected, gpu_out.cpu().numpy())
+    np.testing.assert_allclose(np.tril(expected), gpu_out.cpu().numpy())
     print(f"Exp. of size {n} - CPU time {cpu_time:.2f}s - GPU time {gpu_time:.2f}s")
 
 
 if __name__ == "__main__":
-    run(5)
+    run(10000)

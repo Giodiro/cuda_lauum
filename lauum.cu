@@ -9,30 +9,31 @@
 int ceildiv(int dividend, int divisor);
 
 
-#define BLOCK_SIZE 2
+#define BLOCK_SIZE 32
+//#define DEBUG
 
 
 
 template<typename scalar_t>
 __global__
-void lower_cuda_lauum_ker(const scalar_t *in,
+void lower_cuda_lauum_ker(const scalar_t* __restrict__ in,
                           scalar_t *out,
-                          const unsigned long int size,
-                          const unsigned long int grid_size) {
+                          const int size,
+                          const int grid_size) {
     // Determine the triangular tile of the output (0 indexed)
     const int element = blockIdx.x;
     const int tile_row = (int)((-1 + sqrt((double)(8*element + 1))) / 2.0);
     const int tile_col = element - tile_row * (tile_row + 1) / 2;
-    printf("element=%d, tile_row=%d, tile_col=%d\n", element, tile_row, tile_col);
-    const bool diag = tile_col == tile_row;
-    int tx = threadIdx.x;
-    int ty = threadIdx.y;
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
 
-    const long int col = tile_col * BLOCK_SIZE + threadIdx.x;
-    const long int row = tile_row * BLOCK_SIZE + threadIdx.y;
+    // A_col is the global column of the current thread for the A tile (transposed)
+    const int A_col = tile_row * BLOCK_SIZE + tx;
+    // B_col is the global column of the current thread for the B tile (not transposed)
+    const int B_col = tile_col * BLOCK_SIZE + tx;
 
     // Initialize shared mem
-    __shared__ scalar_t A_tile[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ scalar_t A_tile[BLOCK_SIZE][BLOCK_SIZE+1];
     __shared__ scalar_t B_tile[BLOCK_SIZE][BLOCK_SIZE];
 
     // Initialize thread-local output (register)
@@ -41,40 +42,35 @@ void lower_cuda_lauum_ker(const scalar_t *in,
     for (int tile_i = tile_row; tile_i < grid_size; tile_i++) {
         // i is the row position of this thread within tile-rows
         int i = tile_i * BLOCK_SIZE + ty;
-        int A_col = tile_row * BLOCK_SIZE + tx;
-        int B_col = tile_col * BLOCK_SIZE + tx;
 
         // Copy item input[i, row].T and input[i, col] to shared memory
         A_tile[ty][tx] = 0;
         B_tile[ty][tx] = 0;
-        if (i < size & A_col < size & A_col <= i)
+        if (i < size && A_col < size && A_col <= i) {
             A_tile[ty][tx] = in[i + size * A_col];
-        if (i < size & B_col < size & B_col <= i)
+        }
+        if (i < size && B_col < size && B_col <= i) {
             B_tile[ty][tx] = in[i + size * B_col];
+        }
         __syncthreads();
-
+        
+        #ifdef DEBUG
         printf("(tr=%d, tc=%d, ti=%d, i=%d) - A[%d, %d] = %f\n", tile_row, tile_col, tile_i, i, ty, tx, A_tile[ty][tx]);
         __syncthreads();
         printf("(tr=%d, tc=%d, ti=%d, i=%d) - B[%d, %d] = %f\n", tile_row, tile_col, tile_i, i, ty, tx, B_tile[ty][tx]);
         __syncthreads();
+        #endif
 
         // Compute
-        if (0) {//(diag) {
-            int start = max(threadIdx.x, threadIdx.y);
-            for (int k = start; k < BLOCK_SIZE; k++) {
-                accumulator = accumulator + A_tile[k][threadIdx.x] * B_tile[k][threadIdx.y];
-            }
-        } else {
-            for (int k = 0; k < BLOCK_SIZE; k++) {
-                accumulator = accumulator + A_tile[k][threadIdx.y] * B_tile[k][threadIdx.x];
-            }
+        for (int k = 0; k < BLOCK_SIZE; k++) {
+            accumulator = accumulator + A_tile[k][ty] * B_tile[k][tx];
         }
         __syncthreads();
-        //printf("out: %d, %d = %f\n", threadIdx.x, threadIdx.y, accumulator);
     }
-
     // Write-back
-    if (row >= col) {
+    const int col = tile_col * BLOCK_SIZE + tx;
+    const int row = tile_row * BLOCK_SIZE + ty;
+    if (row >= col && col < size && row < size) {
         out[row + col * size] = accumulator;
     }
 }
