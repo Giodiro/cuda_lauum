@@ -4,8 +4,12 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <ATen/cuda/Exceptions.h>
 
+
 #include "lauum.cuh"
 int ceildiv(int dividend, int divisor);
+
+
+#define BLOCK_SIZE 2
 
 
 
@@ -16,41 +20,66 @@ void lower_cuda_lauum_ker(const scalar_t *in,
                           const unsigned long int size,
                           const unsigned long int grid_size) {
     // Determine the triangular tile of the output (0 indexed)
-    const unsigned long int element = blockIdx.x;
-    const unsigned long int tile_col = (unsigned long int)((-1 + sqrt((double)(8*element + 1))) / 2);
-    const unsigned long int tile_row = element - tile_col * (tile_col + 1) / 2;
+    const int element = blockIdx.x;
+    const int tile_row = (int)((-1 + sqrt((double)(8*element + 1))) / 2.0);
+    const int tile_col = element - tile_row * (tile_row + 1) / 2;
+    printf("element=%d, tile_row=%d, tile_col=%d\n", element, tile_row, tile_col);
+    const bool diag = tile_col == tile_row;
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
 
-    const unsigned long int col = tile_col * blockDim.x + threadIdx.x;
-    const unsigned long int row = tile_row * blockDim.y + threadIdx.y;
+    const long int col = tile_col * BLOCK_SIZE + threadIdx.x;
+    const long int row = tile_row * BLOCK_SIZE + threadIdx.y;
 
     // Initialize shared mem
-    __shared__ scalar_t A_tile[blockDim.x][blockDim.y];
-    __shared__ scalar_t B_tile[blockDim.x][blockDim.y];
+    __shared__ scalar_t A_tile[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ scalar_t B_tile[BLOCK_SIZE][BLOCK_SIZE];
 
     // Initialize thread-local output (register)
     scalar_t accumulator = 0;
 
-    for (unsigned long int tile_i = tile_row; tile_i < grid_size; tile_i++) {
+    for (int tile_i = tile_row; tile_i < grid_size; tile_i++) {
         // i is the row position of this thread within tile-rows
-        const unsigned long int i = tile_i * blockDim.y + threadIdx.y
+        int i = tile_i * BLOCK_SIZE + ty;
+        int A_col = tile_row * BLOCK_SIZE + tx;
+        int B_col = tile_col * BLOCK_SIZE + tx;
 
         // Copy item input[i, row].T and input[i, col] to shared memory
-        A_tile[threadIdx.x][threadIdx.y] = in[i + row * size];
-        B_tile[threadIdx.x][threadIdx.y] = in[i + col * size];
+        A_tile[ty][tx] = 0;
+        B_tile[ty][tx] = 0;
+        if (i < size & A_col < size & A_col <= i)
+            A_tile[ty][tx] = in[i + size * A_col];
+        if (i < size & B_col < size & B_col <= i)
+            B_tile[ty][tx] = in[i + size * B_col];
+        __syncthreads();
+
+        printf("(tr=%d, tc=%d, ti=%d, i=%d) - A[%d, %d] = %f\n", tile_row, tile_col, tile_i, i, ty, tx, A_tile[ty][tx]);
+        __syncthreads();
+        printf("(tr=%d, tc=%d, ti=%d, i=%d) - B[%d, %d] = %f\n", tile_row, tile_col, tile_i, i, ty, tx, B_tile[ty][tx]);
         __syncthreads();
 
         // Compute
-        for (unsigned long k = 0; k < threadDim.x; k++) {
-            accumulator = accumulator + A_tile[k][threadIdx.x] * B_tile[k][threadIdx.y];
+        if (0) {//(diag) {
+            int start = max(threadIdx.x, threadIdx.y);
+            for (int k = start; k < BLOCK_SIZE; k++) {
+                accumulator = accumulator + A_tile[k][threadIdx.x] * B_tile[k][threadIdx.y];
+            }
+        } else {
+            for (int k = 0; k < BLOCK_SIZE; k++) {
+                accumulator = accumulator + A_tile[k][threadIdx.y] * B_tile[k][threadIdx.x];
+            }
         }
         __syncthreads();
+        //printf("out: %d, %d = %f\n", threadIdx.x, threadIdx.y, accumulator);
     }
 
     // Write-back
-    out[row + col * size] = accumulator;
+    if (row >= col) {
+        out[row + col * size] = accumulator;
+    }
 }
 
-torch::Tensor lauum(torch::Tensor &input, &output) {
+torch::Tensor lauum(torch::Tensor &input, torch::Tensor &output) {
     // TODO: Consistency checks
 
     const auto scalar_type = input.scalar_type();
@@ -59,17 +88,16 @@ torch::Tensor lauum(torch::Tensor &input, &output) {
     // Setup CUDA grid dimensions:
     // grid is 1D, so that we can only consider triangularly-appropriate tiles
     // blocks are 2D, with a fixed block size
-    const int block_size = 1024;
-    const int grid_height = ceildiv(size, block_size);
+    const int grid_height = ceildiv(size, BLOCK_SIZE);
 
-    const dim3 dimGrid(grid_height * grid_height / 2 + grid_height);
-    const dim3 dimBlock(block_size, block_size);
+    const dim3 dimGrid(grid_height * (grid_height + 1) / 2, 1);
+    const dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
 
     AT_DISPATCH_FLOATING_TYPES(scalar_type, "cuda_lauum", [&] {
         at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
         at::DeviceGuard g(input.device());
         lower_cuda_lauum_ker<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
-            input.data_ptr<scalar_t>(), output.data_ptr<scalar_t>());
+            input.data_ptr<scalar_t>(), output.data_ptr<scalar_t>(), size, grid_height);
     });
     return output;
 }
