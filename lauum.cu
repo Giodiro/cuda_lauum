@@ -20,10 +20,158 @@ __device__ int2 tri_index(const int linear_index) {
     );
 }
 
+
+template<typename scalar_t>
+__global__
+void lauum_square_tiled_ker2(const scalar_t* __restrict__ in,
+                             scalar_t* __restrict__ out,
+                             const int size,
+                             const int in_stride,
+                             const int out_stride,
+			     const int grid_size) {
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int L_col = blockIdx.y * BLOCK_SIZE + tx;
+    const int R_col = blockIdx.x * BLOCK_SIZE + tx;
+    __shared__ scalar_t tile_L[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ scalar_t tile_R[BLOCK_SIZE][BLOCK_SIZE];
+
+    scalar_t acc = 0;
+    for (int tile_i = blockIdx.y; tile_i < grid_size; tile_i++) {
+	int i = tile_i * BLOCK_SIZE + ty;
+	tile_L[ty][tx] = 0.0;
+	tile_R[ty][tx] = 0.0;
+	if (i < size && L_col <= i) {
+            tile_L[ty][tx] = in[L_col * in_stride + i];
+	}
+	if (i < size && R_col <= i) {
+            tile_R[ty][tx] = in[R_col * in_stride + i];
+	}
+	__syncthreads();
+	for (int k = 0; k < BLOCK_SIZE; k++) {
+            acc += tile_L[k][ty] * tile_R[k][tx];
+	}
+	__syncthreads();
+    }
+    const int outx = blockIdx.x * BLOCK_SIZE + tx;
+    const int outy = blockIdx.y * BLOCK_SIZE + ty;
+    if (outx < size && outy < size && outx <= outy) {
+        out[outx * out_stride + outy] = acc;
+    }
+}
+
+
+template<typename scalar_t>
+__global__
+void lauum_square_tiled_ker(const scalar_t* __restrict__ in,
+                            scalar_t* __restrict__ out,
+                            const int size,
+                            const int in_stride,
+                            const int out_stride,
+			    const int grid_size) {
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int L_col = blockIdx.y * BLOCK_SIZE + tx;
+    const int R_col = blockIdx.x * BLOCK_SIZE + tx;
+    __shared__ scalar_t tile_L[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ scalar_t tile_R[BLOCK_SIZE][BLOCK_SIZE];
+
+    scalar_t acc = 0;
+    for (int tile_i = blockIdx.y; tile_i < grid_size; tile_i++) {
+	int i = tile_i * BLOCK_SIZE + ty;
+	tile_L[ty][tx] = 0.0;
+	tile_R[ty][tx] = 0.0;
+	if (i < size && L_col <= i) {
+            tile_L[ty][tx] = in[L_col * in_stride + i];
+	}
+	if (i < size && R_col <= i) {
+            tile_R[ty][tx] = in[R_col * in_stride + i];
+	}
+	__syncthreads();
+	for (int k = 0; k < BLOCK_SIZE; k++) {
+            acc += tile_L[k][ty] * tile_R[k][tx];
+	}
+	__syncthreads();
+    }
+    const int outx = blockIdx.x * BLOCK_SIZE + tx;
+    const int outy = blockIdx.y * BLOCK_SIZE + ty;
+    if (outx < size && outy < size && outx <= outy) {
+        out[outx * out_stride + outy] = acc;
+    }
+}
+torch::Tensor lauum_lower_square_tiled(const int n, const torch::Tensor &A, const int lda, torch::Tensor &B, const int ldb) {
+    const auto scalar_type = A.scalar_type();
+    const int size = n;
+    const int in_stride = lda;
+    const int out_stride = ldb;
+
+    // Setup CUDA grid dimensions:
+    const int grid_size = ceildiv(size, BLOCK_SIZE);
+
+    const dim3 dimGrid(grid_size, grid_size);
+    const dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
+
+    AT_DISPATCH_FLOATING_TYPES(scalar_type, "cuda_lauum", [&] {
+        at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
+        at::DeviceGuard g(A.device());
+        lauum_square_tiled_ker<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
+            A.data_ptr<scalar_t>(), B.data_ptr<scalar_t>(), size, in_stride, out_stride, grid_size);
+    });
+    return B;
+}
+
+
+template<typename scalar_t>
+__global__
+void lauum_square_basic_ker(const scalar_t* __restrict__ in,
+                            scalar_t* __restrict__ out,
+                            const int size,
+                            const int in_stride,
+                            const int out_stride) {
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+
+    const int outx = blockIdx.x * blockDim.x + tx;
+    const int outy = blockIdx.y * blockDim.y + ty;
+    if (outy < outx || outy >= size || outx >= size) {
+        return;
+    }
+
+    scalar_t acc = 0;
+    for (int k = outy; k < size; k++) {
+        acc += in[outy * in_stride + k] * in[outx * in_stride + k];
+    }
+    out[outx * out_stride + outy] = acc;
+}
+
+torch::Tensor lauum_lower_square_basic(const int n, const torch::Tensor &A, const int lda, torch::Tensor &B, const int ldb) {
+    const auto scalar_type = A.scalar_type();
+    const int size = n;
+    const int in_stride = lda;
+    const int out_stride = ldb;
+
+    // Setup CUDA grid dimensions:
+    const int grid_size = ceildiv(size, BLOCK_SIZE);
+
+    const dim3 dimGrid(grid_size, grid_size);
+    const dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
+
+    AT_DISPATCH_FLOATING_TYPES(scalar_type, "cuda_lauum", [&] {
+        at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
+        at::DeviceGuard g(A.device());
+        lauum_square_basic_ker<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
+            A.data_ptr<scalar_t>(), B.data_ptr<scalar_t>(), size, in_stride, out_stride);
+    });
+    return B;
+}
+
+
+
+
 template<typename scalar_t>
 __global__
 void lower_cuda_lauum_ker(const scalar_t* __restrict__ in,
-                          scalar_t *out,
+                          scalar_t* __restrict__ out,
                           const int size,
                           const int in_stride,
                           const int out_stride,

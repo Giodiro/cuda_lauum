@@ -3,15 +3,16 @@ import time
 import numpy as np
 
 import scipy.linalg.lapack as scll
-from cuda_lauum import cuda_lauum_lower
+from cuda_lauum import *
 
 
-def run(n, repeat=3, compare_results=True):
+def run(n, repeat=3, compare_results=True, dtype=torch.float32, fn=cuda_lauum_lower):
     torch.random.manual_seed(10)
     device = torch.device("cuda:0")
 
     # Generate random matrix
-    matrix = torch.randn((n, n), dtype=torch.float64)
+    print("\tGenerating data...", flush=True)
+    matrix = torch.randn((n, n), dtype=dtype)
     # Make it in F-order
     matrix = matrix.T
 
@@ -24,6 +25,7 @@ def run(n, repeat=3, compare_results=True):
     gpu_in.copy_(matrix)
     torch.cuda.synchronize(device)
 
+    print("\tRunning CPU Exp...", flush=True)
     # Generate the expected output using LAPACK
     cpu_times = []
     for i in range(repeat):
@@ -32,11 +34,13 @@ def run(n, repeat=3, compare_results=True):
         cpu_times.append(time.time() - start_time)
     cpu_time = min(cpu_times)
 
+    print("\tRunning GPU Exp...", flush=True)
     # Run on the GPU
     gpu_times = []
     for i in range(repeat):
+        gpu_out.fill_(0.0)
         start_time = time.time()
-        cuda_lauum_lower(gpu_in.shape[0], gpu_in, gpu_in.stride(1), gpu_out, gpu_out.stride(1))
+        fn(gpu_in.shape[0], gpu_in, gpu_in.stride(1), gpu_out, gpu_out.stride(1))
         torch.cuda.synchronize(device)
         gpu_times.append(time.time() - start_time)
     gpu_time = min(gpu_times)
@@ -52,8 +56,20 @@ def run(n, repeat=3, compare_results=True):
     # Compare outputs and print timing info
     if compare_results:
         np.testing.assert_allclose(np.tril(expected), gpu_out.cpu().numpy())
-    print(f"Exp. of size {n} - CPU time {cpu_time:.2f}s - GPU time {gpu_time:.2f}s")
+    print(f"Exp. of size {n} - CPU time {cpu_time:.2f}s - GPU time {gpu_time:.2f}s  ({fn.__name__})")
 
 
 if __name__ == "__main__":
-    run(10000)
+    #run(4, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
+    #run(50, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
+    run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower)
+    run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_basic)
+    run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
+    run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower)
+    run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_basic)
+    run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_tiled)
+    run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower)
+    run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_basic)
+    run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_tiled)
+    #run(20000, repeat=3, compare_results=False, dtype=torch.float32)
+    #run(30000, repeat=3, compare_results=False, dtype=torch.float32)

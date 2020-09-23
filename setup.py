@@ -12,7 +12,7 @@ setup(
         include_dirs=["."],
     ), ],
     cmdclass={
-        'build_ext': BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=False)
+        'build_ext': BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=True)
     },
     include_package_data=True,
 )
