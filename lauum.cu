@@ -188,27 +188,33 @@ void upper_cuda_lauum_ker(const scalar_t* __restrict__ in,
     const int tx = threadIdx.x;
     const int ty = threadIdx.y;
 
+    // tx and ty are inverted (i.e. tx goes on along the rows,
+    // ty along the columns). This allows coalesced store in the
+    // write-back phase
     const int A_row = tile_pos.y * BLOCK_SIZE + tx;
     const int B_row = tile_pos.x * BLOCK_SIZE + tx;
 
     // Initialize shared mem
-    __shared__ scalar_t A_tile[BLOCK_SIZE][BLOCK_SIZE+1];
-    __shared__ scalar_t B_tile[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ scalar_t A_tile[BLOCK_SIZE*BLOCK_SIZE];
+    // The first dimension of the B_tile needs to be increased to prevent bank
+    // conflicts in B_tile load.
+    __shared__ scalar_t B_tile[(BLOCK_SIZE + 1) * BLOCK_SIZE];
 
     // Initialize thread-local output (register)
     scalar_t accumulator = 0;
 
     for (int tile_i = tile_pos.x; tile_i < grid_size; tile_i++) {
-        int i = tile_i * BLOCK_SIZE + ty; 
+        const int i = tile_i * BLOCK_SIZE + ty; 
+	const int i_pos = i * in_stride;
 
         // Copy item input[row, i] and input[col, i].T to shared memory
-        A_tile[ty][tx] = 0;
-        B_tile[tx][ty] = 0;
+        A_tile[ty * BLOCK_SIZE + tx] = 0;
+        B_tile[tx * (BLOCK_SIZE + 1) + ty] = 0;
 	if (i < size && A_row <= i) {
-	    A_tile[ty][tx] = in[A_row + i * in_stride];
+	    A_tile[ty * BLOCK_SIZE + tx] = in[A_row + i_pos];
 	}
 	if (i < size && B_row <= i) {
-            B_tile[tx][ty] = in[B_row + i * in_stride];
+            B_tile[tx * (BLOCK_SIZE + 1) + ty] = in[B_row + i_pos];
 	}
         __syncthreads();
 
@@ -221,7 +227,9 @@ void upper_cuda_lauum_ker(const scalar_t* __restrict__ in,
 
         // Compute
         for (int k = 0; k < BLOCK_SIZE; k++) {
-            accumulator = accumulator + A_tile[k][tx] * B_tile[ty][k];
+	    // Both accesses to A, B are done to prevent bank conflicts.
+	    // In practice we need to avoid stuff like A[tx][k] where tx is on the first dimension.
+            accumulator = accumulator + A_tile[k * BLOCK_SIZE + tx] * B_tile[ty * (BLOCK_SIZE + 1) + k];
         }
         __syncthreads();
     }
