@@ -6,13 +6,14 @@ import scipy.linalg.lapack as scll
 from cuda_lauum import *
 
 
-def run(n, repeat=3, compare_results=True, dtype=torch.float32, fn=cuda_lauum_lower):
+def run(n, repeat=3, compare_results=True, dtype=torch.float32, fn=cuda_lauum_lower, lower=True):
     torch.random.manual_seed(10)
     device = torch.device("cuda:0")
 
     # Generate random matrix
     print("\tGenerating data...", flush=True)
     matrix = torch.randn((n, n), dtype=dtype)
+    matrix = torch.tril(matrix)
     # Make it in F-order
     matrix = matrix.T
 
@@ -30,7 +31,7 @@ def run(n, repeat=3, compare_results=True, dtype=torch.float32, fn=cuda_lauum_lo
     cpu_times = []
     for i in range(repeat):
         start_time = time.time()
-        expected = scll.dlauum(matrix.numpy(), lower=1, overwrite_c=False)[0]
+        expected = scll.dlauum(matrix.numpy(), lower=lower, overwrite_c=False)[0]
         cpu_times.append(time.time() - start_time)
     cpu_time = min(cpu_times)
 
@@ -55,21 +56,31 @@ def run(n, repeat=3, compare_results=True, dtype=torch.float32, fn=cuda_lauum_lo
 
     # Compare outputs and print timing info
     if compare_results:
-        np.testing.assert_allclose(np.tril(expected), gpu_out.cpu().numpy())
+        if lower:
+            np.testing.assert_allclose(np.tril(expected), gpu_out.cpu().numpy())
+        else:
+            np.testing.assert_allclose(np.triu(expected), gpu_out.cpu().numpy())
     print(f"Exp. of size {n} - CPU time {cpu_time:.2f}s - GPU time {gpu_time:.2f}s  ({fn.__name__})")
 
 
 if __name__ == "__main__":
-    #run(4, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
-    #run(50, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
+    run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_upper, lower=False)
     run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower)
-    run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_basic)
-    run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
-    run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower)
-    run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_basic)
-    run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_tiled)
-    run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower)
-    run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_basic)
-    run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_tiled)
-    #run(20000, repeat=3, compare_results=False, dtype=torch.float32)
-    #run(30000, repeat=3, compare_results=False, dtype=torch.float32)
+    run(5000, repeat=3, compare_results=False, dtype=torch.float64, fn=cuda_lauum_upper, lower=False)
+    run(5000, repeat=3, compare_results=False, dtype=torch.float64, fn=cuda_lauum_lower)
+    run(10000, repeat=3, compare_results=False, dtype=torch.float64, fn=cuda_lauum_upper, lower=False)
+    run(10000, repeat=3, compare_results=False, dtype=torch.float64, fn=cuda_lauum_lower)
+    if False:
+        #run(4, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
+        #run(50, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
+        run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower)
+        run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_basic)
+        run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
+        run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower)
+        run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_basic)
+        run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_tiled)
+        run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower)
+        run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_basic)
+        run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_tiled)
+        #run(20000, repeat=3, compare_results=False, dtype=torch.float32)
+        #run(30000, repeat=3, compare_results=False, dtype=torch.float32)
