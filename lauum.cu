@@ -36,17 +36,17 @@ void lauum_square_tiled_ker2(const scalar_t* __restrict__ in,
                              const int size,
                              const int in_stride,
                              const int out_stride,
-			     const int grid_size) {
+                             const int grid_size) {
     const int tx = threadIdx.x;
     const int ty = threadIdx.y;
-    const int L_col = blockIdx.y * BLOCK_SIZE + tx;
-    const int R_col = blockIdx.x * BLOCK_SIZE + tx;
+    const int L_col = blockIdx.y * BLOCK_SIZE + ty;
+    const int R_col = blockIdx.x * BLOCK_SIZE + ty;
     __shared__ scalar_t tile_L[BLOCK_SIZE][BLOCK_SIZE];
     __shared__ scalar_t tile_R[BLOCK_SIZE][BLOCK_SIZE];
 
     scalar_t acc = 0;
     for (int tile_i = blockIdx.y; tile_i < grid_size; tile_i++) {
-	int i = tile_i * BLOCK_SIZE + ty;
+	int i = tile_i * BLOCK_SIZE + tx;
 	tile_L[ty][tx] = 0.0;
 	tile_R[ty][tx] = 0.0;
 	if (i < size && L_col <= i) {
@@ -61,11 +61,12 @@ void lauum_square_tiled_ker2(const scalar_t* __restrict__ in,
 	}
 	__syncthreads();
     }
-    const int outx = blockIdx.x * BLOCK_SIZE + tx;
-    const int outy = blockIdx.y * BLOCK_SIZE + ty;
+    const int outx = blockIdx.x * BLOCK_SIZE + ty;
+    const int outy = blockIdx.y * BLOCK_SIZE + tx;
     if (outx < size && outy < size && outx <= outy) {
         out[outx * out_stride + outy] = acc;
     }
+
 }
 
 
@@ -79,14 +80,14 @@ void lauum_square_tiled_ker(const scalar_t* __restrict__ in,
 			    const int grid_size) {
     const int tx = threadIdx.x;
     const int ty = threadIdx.y;
-    const int L_col = blockIdx.y * BLOCK_SIZE + tx;
-    const int R_col = blockIdx.x * BLOCK_SIZE + tx;
-    __shared__ scalar_t tile_L[BLOCK_SIZE][BLOCK_SIZE];
+    const int L_col = blockIdx.y * BLOCK_SIZE + ty;
+    const int R_col = blockIdx.x * BLOCK_SIZE + ty;
+    __shared__ scalar_t tile_L[BLOCK_SIZE + 1][BLOCK_SIZE];
     __shared__ scalar_t tile_R[BLOCK_SIZE][BLOCK_SIZE];
 
     scalar_t acc = 0;
     for (int tile_i = blockIdx.y; tile_i < grid_size; tile_i++) {
-	int i = tile_i * BLOCK_SIZE + ty;
+	int i = tile_i * BLOCK_SIZE + tx;
 	tile_L[ty][tx] = 0.0;
 	tile_R[ty][tx] = 0.0;
 	if (i < size && L_col <= i) {
@@ -101,8 +102,8 @@ void lauum_square_tiled_ker(const scalar_t* __restrict__ in,
 	}
 	__syncthreads();
     }
-    const int outx = blockIdx.x * BLOCK_SIZE + tx;
-    const int outy = blockIdx.y * BLOCK_SIZE + ty;
+    const int outx = blockIdx.x * BLOCK_SIZE + ty;
+    const int outy = blockIdx.y * BLOCK_SIZE + tx;
     if (outx < size && outy < size && outx <= outy) {
         out[outx * out_stride + outy] = acc;
     }
@@ -205,17 +206,17 @@ void upper_cuda_lauum_ker(const scalar_t* __restrict__ in,
 
     for (int tile_i = tile_pos.x; tile_i < grid_size; tile_i++) {
         const int i = tile_i * BLOCK_SIZE + ty; 
-	const int i_pos = i * in_stride;
-
+        const int i_pos = i * in_stride;
+        
         // Copy item input[row, i] and input[col, i].T to shared memory
         A_tile[ty * BLOCK_SIZE + tx] = 0;
         B_tile[tx * (BLOCK_SIZE + 1) + ty] = 0;
-	if (i < size && A_row <= i) {
-	    A_tile[ty * BLOCK_SIZE + tx] = in[A_row + i_pos];
-	}
-	if (i < size && B_row <= i) {
+        if (i < size && A_row <= i) {
+            A_tile[ty * BLOCK_SIZE + tx] = in[A_row + i_pos];
+        }
+        if (i < size && B_row <= i) {
             B_tile[tx * (BLOCK_SIZE + 1) + ty] = in[B_row + i_pos];
-	}
+        }
         __syncthreads();
 
 	#ifdef DEBUG
@@ -227,8 +228,8 @@ void upper_cuda_lauum_ker(const scalar_t* __restrict__ in,
 
         // Compute
         for (int k = 0; k < BLOCK_SIZE; k++) {
-	    // Both accesses to A, B are done to prevent bank conflicts.
-	    // In practice we need to avoid stuff like A[tx][k] where tx is on the first dimension.
+            // Both accesses to A, B are done to prevent bank conflicts.
+            // In practice we need to avoid stuff like A[tx][k] where tx is on the first dimension.
             accumulator = accumulator + A_tile[k * BLOCK_SIZE + tx] * B_tile[ty * (BLOCK_SIZE + 1) + k];
         }
         __syncthreads();
@@ -248,6 +249,12 @@ torch::Tensor lauum_upper(const int n, const torch::Tensor &A, const int lda, to
     const auto size = n;
     const auto in_stride = lda;
     const auto out_stride = ldb;
+#ifdef DEBUG
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float elapsed;
+#endif
 
     // Setup CUDA grid dimensions:
     // grid is 1D, so that we can only consider triangularly-appropriate tiles
@@ -260,9 +267,27 @@ torch::Tensor lauum_upper(const int n, const torch::Tensor &A, const int lda, to
     AT_DISPATCH_FLOATING_TYPES(scalar_type, "cuda_lauum", [&] {
         at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
         at::DeviceGuard g(A.device());
+
+#ifdef DEBUG
+        cudaEventRecord(start);
+#endif
         upper_cuda_lauum_ker<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
             A.data_ptr<scalar_t>(), B.data_ptr<scalar_t>(), size, in_stride, out_stride, grid_height);
+#ifdef DEBUG
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&elapsed, start, stop);
+        cudaEventDestroy(start);
+        cudaEventDestroy(stop);
+#endif
     });
+
+#ifdef DEBUG
+    long long int num_ops = (2 * (long long)size * (long long)(size + 1) * (long long)(size + 2)) / 6;
+    printf("num-ops: %ld  -  Flops: %.4f\n", num_ops, num_ops / (elapsed / 1000.0));
+    printf("upper_cuda_lauum_ker - N=%d, time=%.4fs - GFlops=%.2fGF/s\n",
+           size, elapsed / 1000, (num_ops / (elapsed / 1000.0)) / 1e9);
+#endif
     return B;
 }
 
@@ -280,12 +305,12 @@ void lower_cuda_lauum_ker(const scalar_t* __restrict__ in,
     const int ty = threadIdx.y;
 
     // A_col is the global column of the current thread for the A tile (transposed)
-    const int A_col = tile_pos.y * BLOCK_SIZE + tx;
+    const int A_col = tile_pos.y * BLOCK_SIZE + ty;
     // B_col is the global column of the current thread for the B tile (not transposed)
-    const int B_col = tile_pos.x * BLOCK_SIZE + tx;
+    const int B_col = tile_pos.x * BLOCK_SIZE + ty;
 
     // Initialize shared mem
-    __shared__ scalar_t A_tile[BLOCK_SIZE][BLOCK_SIZE+1];
+    __shared__ scalar_t A_tile[BLOCK_SIZE][BLOCK_SIZE];
     __shared__ scalar_t B_tile[BLOCK_SIZE][BLOCK_SIZE];
 
     // Initialize thread-local output (register)
@@ -293,15 +318,15 @@ void lower_cuda_lauum_ker(const scalar_t* __restrict__ in,
 
     for (int tile_i = tile_pos.y; tile_i < grid_size; tile_i++) {
         // i is the row position of this thread within tile-rows
-        int i = tile_i * BLOCK_SIZE + ty;
+        int i = tile_i * BLOCK_SIZE + tx;
 
         // Copy item input[i, row].T and input[i, col] to shared memory
         A_tile[ty][tx] = 0;
         B_tile[ty][tx] = 0;
-        if (i < size && A_col < size && A_col <= i) {
+        if (i < size && A_col <= i) {
             A_tile[ty][tx] = in[i + in_stride * A_col];
         }
-        if (i < size && B_col < size && B_col <= i) {
+        if (i < size && B_col <= i) {
             B_tile[ty][tx] = in[i + in_stride * B_col];
         }
         __syncthreads();
@@ -320,8 +345,8 @@ void lower_cuda_lauum_ker(const scalar_t* __restrict__ in,
         __syncthreads();
     }
     // Write-back
-    const int col = tile_pos.x * BLOCK_SIZE + tx;
-    const int row = tile_pos.y * BLOCK_SIZE + ty;
+    const int col = tile_pos.x * BLOCK_SIZE + ty;
+    const int row = tile_pos.y * BLOCK_SIZE + tx;
     if (row >= col && col < size && row < size) {
         out[row + col * out_stride] = accumulator;
     }
