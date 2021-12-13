@@ -10,9 +10,10 @@ setup(
         "cuda_lauum",
         sources=["pytorch_bindings.cpp", "lauum.cu"],
         include_dirs=["."],
+        extra_compile_args={"nvcc": ['--ptxas-options=-v', '-maxrregcount', '64', '-keep', '-lineinfo', ], "cxx": []},
     ), ],
     cmdclass={
-        'build_ext': BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=True)
+        'build_ext': BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=False)
     },
     include_package_data=True,
 )
