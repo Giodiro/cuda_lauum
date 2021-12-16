@@ -98,6 +98,16 @@ void lauum_lower_ker_sq_basic(const scalar_t* __restrict__ in,
 }
 
 
+
+#define BLK_N 64
+#define BLK_K 32
+#define DIM_READ_X 16
+#define DIM_READ_Y DIM_READ_X
+#define DIM_COMP_X 16
+#define DIM_COMP_Y DIM_COMP_X
+#define THR_N ( BLK_N / DIM_COMP_X )
+
+
 template<typename scalar_t>
 __global__
 void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
@@ -106,10 +116,174 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
                                const int in_stride,
                                const int out_stride,
                                const int grid_size) {
-    const int2 tile_pos = tri_index_upper(blockIdx.x);
+    const int2 p = tri_index_lower(blockIdx.x);  // lower and upper are mixed up.
     const int tx = threadIdx.x;
     const int ty = threadIdx.y;
 
+    // DIM_COMP_X, DIM_COMP_Y  Size of the thread block for computing output
+    // DIM_READ_X, DIM_READ_Y  Size of thread blocks for reading A, B
+    // BLK_K, BLK_N
+    // Multiplication is between two matrices of shape N, K.
+    // The first dimension (N) is also referred to as X, the second (K=Y).
+    __shared__ scalar_t sA[BLK_K][BLK_N];
+    __shared__ scalar_t sB[BLK_N][BLK_K + 1];
+
+    scalar_t rC[THR_N][THR_N];
+    scalar_t rA[THR_N];
+    scalar_t rB[THR_N];
+
+    scalar_t ra[BLK_K / DIM_READ_Y][BLK_N / DIM_READ_X];
+    scalar_t rb[BLK_K / DIM_READ_Y][BLK_N / DIM_READ_X];
+
+    // Total work (output size) of the thread block is BLK_N * BLK_N, but
+    // there are only DIM_COMP_X * DIM_COMP_Y threads. So each thread works on
+    // more than a single output.
+    // The thread-ids are indices of the current thread within the BLK_N, BLK_N
+    // work block. Note ty goes horizontally, tx vertically.
+    int tid_global = DIM_COMP_X * ty + tx;
+    
+    int tid_x = tid_global % DIM_READ_X;
+    int tid_y = tid_global / DIM_READ_X;
+
+    int i, j, k, ki;
+
+    // Zero-out rC
+    for (i = 0; i < THR_N; i++) {
+        for (j = 0; j < THR_N; j++) {
+            rC[i][j] = 0;
+        }
+    }
+
+
+    for (i = 0; i < BLK_K; i += DIM_READ_Y) {
+        for (j = 0; j < BLK_N; j += DIM_READ_X) {
+            // Read at input[p.x * DIM_X + tid_x_a + j][p.y * DIM_X + tid_y_a + i]
+            const int row_a = p.x * BLK_N + tid_x + j;
+            const int col = p.y * BLK_N + tid_y + i;
+            // A is triangular when p.x == p.y
+            if (row_a <= col) {
+                sA[tid_y + i][tid_x + j] = in[min(row_a + col * in_stride, size * in_stride - 1)];
+            } else {
+                sA[tid_y + i][tid_x + j] = 0;
+            }
+            // Read at input[p.y * DIM_X + tid_x_a + j][p.y * DIM_X + tid_y_b + i]
+            // B is triangular always!
+            const int row_b = p.y * BLK_N + tid_x + j;
+            if (row_b <= col) {
+                sB[tid_x + j][tid_y + i] = in[min(row_b + col * in_stride, size * in_stride - 1)];
+            } else {
+                sB[tid_x + j][tid_y + i] = 0;
+            }
+            //printf("Reading A at %d, %d: sA[%d, %d] = %f\n", row_a, col, tid_y + i, tid_x + j, sA[tid_y + i][tid_x + j]);
+            //printf("Reading B at %d, %d: sB[%d, %d] = %f\n", row_b, col, tid_x + j, tid_y + i, sB[tid_x + j][tid_y + i]);
+        }
+    }
+    __syncthreads();
+
+    for (k = p.y * BLK_N + BLK_K; k < size; k += BLK_K) {
+        // Load global -> registers
+        for (i = 0; i < BLK_K / DIM_READ_Y; i++) {
+            for (j = 0; j < BLK_N / DIM_READ_X; j++) {
+                const int row_a = p.x * BLK_N + tid_x + j * DIM_READ_X;
+                const int col = k + i * DIM_READ_Y + tid_y;
+                ra[i][j] = in[min(row_a + col * in_stride, size * in_stride - 1)];
+                const int row_b = p.y * BLK_N + tid_x + j * DIM_READ_X;
+                rb[i][j] = in[min(row_b + col * in_stride, size * in_stride - 1)];
+                //printf("(ra)Reading A at %d, %d: sA[%d, %d] = %f\n", row_a, col, tid_y + i * DIM_READ_Y, tid_x + j * DIM_READ_X, ra[i][j]);
+                //printf("(rb)Reading B at %d, %d: sB[%d, %d] = %f\n", row_b, col, tid_x + j * DIM_READ_X, tid_y + i * DIM_READ_Y, rb[i][j]);
+            }
+        }
+        // Multiply
+        for (ki = 0; ki < BLK_K; ki++) {
+            // shared -> registers
+            for (i = 0; i < THR_N; i++) {
+                rA[i] = sA[ki][i * DIM_COMP_X + tx];
+                rB[i] = sB[i * DIM_COMP_Y + ty][ki];
+                //printf("(%d,%d) Loading rA[%d] from sA[%d][%d] = %f\n", tx, ty, i, ki, i * DIM_COMP_X + tx, rA[i]);
+                //printf("(%d,%d) Loading rB[%d] from sB[%d][%d] = %f\n", tx, ty, i, i * DIM_COMP_Y + ty, ki, rB[i]);
+            }
+
+            // Compute
+            for (i = 0; i < THR_N; i++) {
+                for (j = 0; j < THR_N; j++) {
+                    rC[i][j] += rA[i] * rB[j];
+                    //printf("Thread %d, %d - rC[%d][%d] = %f\n", tx, ty, i, j, rC[i][j]);
+                }
+            }
+        }
+        __syncthreads();
+        // Load registers -> shared
+        for (i = 0; i < BLK_K / DIM_READ_Y; i++) {
+            for (j = 0; j < BLK_N / DIM_READ_X; j++) {
+                sA[tid_y + i * DIM_READ_Y][tid_x + j * DIM_READ_X] = ra[i][j];
+                sB[tid_x + j * DIM_READ_X][tid_y + i * DIM_READ_Y] = rb[i][j];
+            }
+        }
+        __syncthreads();
+    }
+
+    // Multiply last block
+    for (ki = 0; ki < size - k + BLK_K; ki++) {
+        // shared -> registers
+        for (i = 0; i < THR_N; i++) {
+            rA[i] = sA[ki][i * DIM_COMP_X + tx];
+            rB[i] = sB[i * DIM_COMP_Y + ty][ki];
+            //printf("+(%d,%d) Loading rA[%d] from sA[%d][%d] = %f\n", tx, ty, i, ki, i * DIM_COMP_X + tx, rA[i]);
+            //printf("+(%d,%d) Loading rB[%d] from sB[%d][%d] = %f\n", tx, ty, i, i * DIM_COMP_Y + ty, ki, rB[i]);
+        }
+        // Compute
+        for (i = 0; i < THR_N; i++) {
+            for (j = 0; j < THR_N; j++) {
+                rC[i][j] += rA[i] * rB[j];
+                //printf("+Thread %d, %d - rC[%d][%d] = %f\n", tx, ty, i, j, rC[i][j]);
+            }
+        }
+    }
+
+    // rC -> global (output)
+    for (i = 0; i < THR_N; i++) {
+        for (j = 0; j < THR_N; j++) {
+            const int row_out = p.x * BLK_N + tid_x + i * DIM_COMP_X;
+            const int col_out = p.y * BLK_N + tid_y + j * DIM_COMP_Y;
+            if (row_out <= col_out && col_out < size) {
+                out[row_out + col_out * out_stride] = rC[i][j];
+            }
+        }
+    }
+
+    /*
+    // Initialize thread-local output (register)
+    scalar_t accumulator = 0;
+
+    for (int k = p.y; k < grid_size; k++) {
+        int row_a = p.x * BLOCK_SIZE + tx;
+        int col_a = k * BLOCK_SIZE + ty;
+        if (row_a <= col_a && col_a < size) {
+            A_tile[ty][tx] = in[row_a + col_a * in_stride];
+        } else {
+            A_tile[ty][tx] = 0;
+        }
+
+        int row_b = p.y * BLOCK_SIZE + tx;
+        int col_b = k * BLOCK_SIZE + ty;  // Same as col_a
+        if (row_b <= col_b && col_b < size) {
+            B_tile[tx][ty] = in[row_b + col_b * in_stride];
+        } else {
+            B_tile[tx][ty] = 0;
+        }
+        __syncthreads();
+
+        for (int l = 0; l < BLOCK_SIZE; l++) {
+            accumulator += A_tile[l][tx] * B_tile[ty][l];
+        }
+        __syncthreads();
+    }
+    const int row_out = p.x * BLOCK_SIZE + tx;
+    const int col_out = p.y * BLOCK_SIZE + ty;
+    if (row_out <= col_out && col_out < size) {
+        out[row_out + col_out * out_stride] = accumulator;
+    } */
+    /*
     // tx and ty are inverted (i.e. tx goes on along the rows,
     // ty along the columns). This allows coalesced store in the
     // write-back phase
@@ -117,13 +291,9 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
     const int B_row = tile_pos.x * BLOCK_SIZE + tx;
 
     // Initialize shared mem
-    __shared__ scalar_t A_tile[BLOCK_SIZE*BLOCK_SIZE];
     // The first dimension of the B_tile needs to be increased to prevent bank
     // conflicts in B_tile load.
-    __shared__ scalar_t B_tile[(BLOCK_SIZE + 1) * BLOCK_SIZE];
 
-    // Initialize thread-local output (register)
-    scalar_t accumulator = 0;
 
     for (int tile_i = tile_pos.x; tile_i < grid_size; tile_i++) {
         const int i = tile_i * BLOCK_SIZE + ty;
@@ -153,7 +323,7 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
     const int row = tile_pos.y * BLOCK_SIZE + tx;
     if (row <= col && col < size && row < size) {
         out[row + col * out_stride] = accumulator;
-    }
+    }*/
 }
 
 template<typename scalar_t>
@@ -269,10 +439,12 @@ torch::Tensor lauum_upper(const int n, const torch::Tensor &A, const int lda, to
     // Setup CUDA grid dimensions:
     // grid is 1D, so that we can only consider triangularly-appropriate tiles
     // blocks are 2D, with a fixed block size
-    const int grid_height = ceildiv(size, BLOCK_SIZE);
+    //const int grid_height = ceildiv(size, BLOCK_SIZE);
+    const int grid_height = ceildiv(size, BLK_N);
 
     const dim3 dimGrid(grid_height * (grid_height + 1) / 2, 1);
-    const dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
+    //const dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
+    const dim3 dimBlock(DIM_COMP_X, DIM_COMP_Y);
 
     AT_DISPATCH_FLOATING_TYPES(scalar_type, "cuda_lauum", [&] {
         at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();

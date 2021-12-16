@@ -1,8 +1,10 @@
-import torch
+import sys
 import time
-import numpy as np
 
+import torch
+import numpy as np
 import scipy.linalg.lapack as scll
+
 from cuda_lauum import *
 
 
@@ -91,7 +93,12 @@ def run(n, repeat=3, compare_results=True, dtype=torch.float32, fn=cuda_lauum_lo
         if lower:
             np.testing.assert_allclose(np.tril(expected), gpu_out.cpu().numpy())
         else:
-            np.testing.assert_allclose(np.triu(expected), gpu_out.cpu().numpy())
+            v_cpu = np.triu(expected)
+            v_gpu = np.triu(gpu_out.cpu().numpy())
+            diff = np.abs(v_cpu - v_gpu)
+            #with np.printoptions(precision=1, linewidth=160):
+            #    print(diff)
+            np.testing.assert_allclose(v_cpu, v_gpu)
     print(f"Exp. of size {n} - CPU time {cpu_time:.2f}s - GPU time {gpu_time:.2f}s  ({fn.__name__}) - GFlops {flops/1e9:.2f}")
 
 
@@ -99,10 +106,16 @@ if __name__ == "__main__":
     dt = torch.float64
     fn = cuda_lauum_lower
 
-    run(10000, repeat=5, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
+    #run(1000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_upper, lower=False)
+    #sys.exit()
+
+    run(1000, repeat=5, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
+    time.sleep(1)
+    run(5000, repeat=5, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
     time.sleep(1)
     run(10000, repeat=5, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
-    #time.sleep(1)
+    time.sleep(1)
+    run_gemm(10000, repeat=5, dtype=torch.float32)
     #run(10000, repeat=1, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
     #time.sleep(1)
 
