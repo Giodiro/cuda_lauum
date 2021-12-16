@@ -40,9 +40,9 @@ def run(n, repeat=3, compare_results=True, dtype=torch.float32, fn=cuda_lauum_lo
     device = torch.device("cuda:0")
 
     # Generate random matrix
-    #print("\tGenerating data...", flush=True)
     matrix = torch.randn((n, n), dtype=dtype)
-    matrix = torch.tril(matrix)
+    # Fill 'ignored' side of the matrix with zeros.
+    # matrix = torch.tril(matrix)
     # Make it in F-order
     matrix = matrix.T
 
@@ -55,6 +55,7 @@ def run(n, repeat=3, compare_results=True, dtype=torch.float32, fn=cuda_lauum_lo
     gpu_in.copy_(matrix)
     torch.cuda.synchronize(device)
 
+    # Run on the CPU
     if compare_results:
         print("\tRunning CPU Exp...", flush=True)
         # Generate the expected output using LAPACK
@@ -67,7 +68,6 @@ def run(n, repeat=3, compare_results=True, dtype=torch.float32, fn=cuda_lauum_lo
     else:
         cpu_time = 0
 
-    #print("\tRunning GPU Exp...", flush=True)
     # Run on the GPU
     gpu_times = []
     for i in range(repeat):
@@ -81,12 +81,13 @@ def run(n, repeat=3, compare_results=True, dtype=torch.float32, fn=cuda_lauum_lo
     flops = flop / gpu_time
 
     if False:
-        print("INPUT")
-        print(matrix)
-        print("EXPECTED")
-        print(torch.from_numpy(expected))
-        print("ACTUAL")
-        print(gpu_out)
+        with np.printoptions(precision=3, linewidth=160):
+            print("INPUT")
+            print(matrix)
+            print("EXPECTED")
+            print(torch.from_numpy(expected))
+            print("ACTUAL")
+            print(gpu_out)
 
     # Compare outputs and print timing info
     if compare_results:
@@ -96,8 +97,9 @@ def run(n, repeat=3, compare_results=True, dtype=torch.float32, fn=cuda_lauum_lo
             v_cpu = np.triu(expected)
             v_gpu = np.triu(gpu_out.cpu().numpy())
             diff = np.abs(v_cpu - v_gpu)
-            #with np.printoptions(precision=1, linewidth=160):
-            #    print(diff)
+            if False:
+                with np.printoptions(precision=1, linewidth=160):
+                   print(diff)
             np.testing.assert_allclose(v_cpu, v_gpu)
     print(f"Exp. of size {n} - CPU time {cpu_time:.2f}s - GPU time {gpu_time:.2f}s  ({fn.__name__}) - GFlops {flops/1e9:.2f}")
 
