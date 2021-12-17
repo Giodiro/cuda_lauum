@@ -108,12 +108,16 @@ if __name__ == "__main__":
     dt = torch.float64
     fn = cuda_lauum_lower
 
-    #run(1000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_upper, lower=False)
+    run(1000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_upper, lower=False)
     #sys.exit()
 
     run(1000, repeat=5, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
     time.sleep(1)
+    run_gemm(1000, repeat=5, dtype=torch.float32)
+    time.sleep(1)
     run(5000, repeat=5, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
+    time.sleep(1)
+    run_gemm(5000, repeat=5, dtype=torch.float32)
     time.sleep(1)
     run(10000, repeat=5, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
     time.sleep(1)
