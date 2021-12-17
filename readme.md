@@ -1,14 +1,16 @@
-# CUDA Implementation of the LAUUM Lapack Function
+# CUDA LAUUM
+
+CUDA implementation of the LAUUM LAPACK function (triangular matrix multiplication).
 
 ## LAUUM
 
-The LAUUM function computes the product ![U U^\top](https://latex.codecogs.com/svg.latex?\inline&space;U&space;U^\top) or 
-![L^\top L](https://latex.codecogs.com/svg.latex?\inline&space;L^\top&space;L) where ![U](https://latex.codecogs.com/svg.latex?\inline&space;U) is an **upper triangular** matrix and 
-![L](https://latex.codecogs.com/svg.latex?\inline&space;L) is a **lower triangular** matrix. Since the result is symmetric, the output will also be a triangular matrix.
+The LAUUM function computes the product ![U U^\top](https://latex.codecogs.com/svg.latex?\bg_white&space;\inline&space;U&space;U^\top) or 
+![L^\top L](https://latex.codecogs.com/svg.latex?\bg_white&space;\inline&space;L^\top&space;L) where ![U](https://latex.codecogs.com/svg.latex?\bg_white&space;\inline&space;U) is an **upper triangular** matrix and 
+![L](https://latex.codecogs.com/svg.latex?\bg_white&space;\inline&space;L) is a **lower triangular** matrix. Since the result is symmetric, the output will also be a triangular matrix.
 
 The complexity of the algorithm is cubic in the matrix size (as with all matrix multiplication), but some performance can be gained
 by ignoring the lower/upper triangular parts of the input. The overall complexity for a matrix of size n is of 
-![\frac{n \times (n + 1) \times (n + 2)}{3}](https://latex.codecogs.com/svg.latex?\frac{n&space;\times&space;(n&space;&plus;&space;1)&space;\times&space;(n&space;&plus;&space;2)}{3})
+![\frac{n \times (n + 1) \times (n + 2)}{3}](https://latex.codecogs.com/svg.latex?\bg_white&space;\frac{n&space;\times&space;(n&space;&plus;&space;1)&space;\times&space;(n&space;&plus;&space;2)}{3})
 
 ## Implementations
 
