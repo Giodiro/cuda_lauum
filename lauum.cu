@@ -34,46 +34,10 @@ __device__ int2 tri_index_upper(const int linear_index) {
 }
 
 
-template<typename scalar_t>
-__global__
-void lauum_lower_ker_sq_tiled(const scalar_t* __restrict__ in,
-                              scalar_t* __restrict__ out,
-                              const int size,
-                              const int in_stride,
-                              const int out_stride,
-			                  const int grid_size) {
-    const int tx = threadIdx.x;
-    const int ty = threadIdx.y;
-    const int L_col = blockIdx.y * BLOCK_SIZE + ty;
-    const int R_col = blockIdx.x * BLOCK_SIZE + ty;
-    __shared__ scalar_t tile_L[BLOCK_SIZE + 1][BLOCK_SIZE];
-    __shared__ scalar_t tile_R[BLOCK_SIZE][BLOCK_SIZE];
-
-    scalar_t acc = 0;
-    for (int tile_i = blockIdx.y; tile_i < grid_size; tile_i++) {
-    	int i = tile_i * BLOCK_SIZE + tx;
-    	tile_L[ty][tx] = 0.0;
-    	tile_R[ty][tx] = 0.0;
-    	if (i < size && L_col <= i) {
-                tile_L[ty][tx] = in[L_col * in_stride + i];
-    	}
-    	if (i < size && R_col <= i) {
-                tile_R[ty][tx] = in[R_col * in_stride + i];
-    	}
-    	__syncthreads();
-    	for (int k = 0; k < BLOCK_SIZE; k++) {
-                acc += tile_L[k][ty] * tile_R[k][tx];
-    	}
-    	__syncthreads();
-    }
-    const int outx = blockIdx.x * BLOCK_SIZE + ty;
-    const int outy = blockIdx.y * BLOCK_SIZE + tx;
-    if (outx < size && outy < size && outx <= outy) {
-        out[outx * out_stride + outy] = acc;
-    }
-}
-
-
+/*
+ * A naive implementation which skips the multiplications
+ * outside of the lower triangle.
+ */
 template<typename scalar_t>
 __global__
 void lauum_lower_ker_sq_basic(const scalar_t* __restrict__ in,
@@ -98,7 +62,53 @@ void lauum_lower_ker_sq_basic(const scalar_t* __restrict__ in,
 }
 
 
+/*
+ * Uses tiling via two shared memory arrays, but the grid-size is still square
+ * so half of the CUDA blocks are unused.
+ */
+template<typename scalar_t>
+__global__
+void lauum_lower_ker_sq_tiled(const scalar_t* __restrict__ in,
+                              scalar_t* __restrict__ out,
+                              const int size,
+                              const int in_stride,
+                              const int out_stride,
+                              const int grid_size) {
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int L_col = blockIdx.y * BLOCK_SIZE + ty;
+    const int R_col = blockIdx.x * BLOCK_SIZE + ty;
+    __shared__ scalar_t tile_L[BLOCK_SIZE + 1][BLOCK_SIZE];
+    __shared__ scalar_t tile_R[BLOCK_SIZE][BLOCK_SIZE];
 
+    scalar_t acc = 0;
+    for (int tile_i = blockIdx.y; tile_i < grid_size; tile_i++) {
+        int i = tile_i * BLOCK_SIZE + tx;
+        tile_L[ty][tx] = 0.0;
+        tile_R[ty][tx] = 0.0;
+        if (i < size && L_col <= i) {
+            tile_L[ty][tx] = in[L_col * in_stride + i];
+        }
+        if (i < size && R_col <= i) {
+            tile_R[ty][tx] = in[R_col * in_stride + i];
+        }
+        __syncthreads();
+        for (int k = 0; k < BLOCK_SIZE; k++) {
+            acc += tile_L[k][ty] * tile_R[k][tx];
+        }
+        __syncthreads();
+    }
+    const int outx = blockIdx.x * BLOCK_SIZE + ty;
+    const int outy = blockIdx.y * BLOCK_SIZE + tx;
+    if (outx < size && outy < size && outx <= outy) {
+        out[outx * out_stride + outy] = acc;
+    }
+}
+
+
+/*
+ * Definitions for lauum_upper_ker_tri_tiled
+ */
 #define BLK_N 96
 #define BLK_K 16
 #define DIM_READ_X 16
@@ -108,14 +118,19 @@ void lauum_lower_ker_sq_basic(const scalar_t* __restrict__ in,
 #define THR_N ( BLK_N / DIM_COMP_X )
 
 
+/*
+ * Triangular, tiled implementation with double buffered registers
+ * and thread coarsening (each thread computes multiple output
+ * elements). Quite heavily inspired by GEMM in MAGMA.
+ */
 template<typename scalar_t>
 __global__
-void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
-                               scalar_t* __restrict__ out,
-                               const int size,
-                               const int in_stride,
-                               const int out_stride,
-                               const int grid_size) {
+void lauum_upper_ker_tri_tiled_adv(const scalar_t* __restrict__ in,
+                                   scalar_t* __restrict__ out,
+                                   const int size,
+                                   const int in_stride,
+                                   const int out_stride,
+                                   const int grid_size) {
     const int2 p = tri_index_lower(blockIdx.x);  // lower and upper are mixed up.
     const int tx = threadIdx.x;
     const int ty = threadIdx.y;
@@ -141,7 +156,7 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
     // The thread-ids are indices of the current thread within the BLK_N, BLK_N
     // work block. Note ty goes horizontally, tx vertically.
     const int tid_global = DIM_COMP_X * ty + tx;
-    
+
     const int tid_x = tid_global % DIM_READ_X;
     const int tid_y = tid_global / DIM_READ_X;
 
@@ -244,53 +259,26 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
             out[row_a + (i / THR_N) * DIM_COMP_X + (col + (i % THR_N) * DIM_COMP_Y) * out_stride] = rC[i];
         }
     }
-    /*
-    # pragma unroll
-    for (i = 0; i < THR_N; i++) {
-        row_a = p.x * BLK_N + tid_x + i * DIM_COMP_X;
-        # pragma unroll
-        for (j = 0; j < THR_N; j++) {
-            col = p.y * BLK_N + tid_y + j * DIM_COMP_Y;
-            if (row_a <= col && col < size) {
-                out[row_a + col * out_stride] = rC[i][j];
-            }
-        }
-    }
-    */
+}
 
-    /*
-    // Initialize thread-local output (register)
-    scalar_t accumulator = 0;
 
-    for (int k = p.y; k < grid_size; k++) {
-        int row_a = p.x * BLOCK_SIZE + tx;
-        int col_a = k * BLOCK_SIZE + ty;
-        if (row_a <= col_a && col_a < size) {
-            A_tile[ty][tx] = in[row_a + col_a * in_stride];
-        } else {
-            A_tile[ty][tx] = 0;
-        }
+#define BLOCK_SIZE 32
 
-        int row_b = p.y * BLOCK_SIZE + tx;
-        int col_b = k * BLOCK_SIZE + ty;  // Same as col_a
-        if (row_b <= col_b && col_b < size) {
-            B_tile[tx][ty] = in[row_b + col_b * in_stride];
-        } else {
-            B_tile[tx][ty] = 0;
-        }
-        __syncthreads();
+/*
+ * Triangular, tiled implementation with shared memory.
+ */
+template<typename scalar_t>
+__global__
+void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
+                               scalar_t* __restrict__ out,
+                               const int size,
+                               const int in_stride,
+                               const int out_stride,
+                               const int grid_size) {
+    const int2 tile_pos = tri_index_upper(blockIdx.x);
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
 
-        for (int l = 0; l < BLOCK_SIZE; l++) {
-            accumulator += A_tile[l][tx] * B_tile[ty][l];
-        }
-        __syncthreads();
-    }
-    const int row_out = p.x * BLOCK_SIZE + tx;
-    const int col_out = p.y * BLOCK_SIZE + ty;
-    if (row_out <= col_out && col_out < size) {
-        out[row_out + col_out * out_stride] = accumulator;
-    } */
-    /*
     // tx and ty are inverted (i.e. tx goes on along the rows,
     // ty along the columns). This allows coalesced store in the
     // write-back phase
@@ -298,9 +286,13 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
     const int B_row = tile_pos.x * BLOCK_SIZE + tx;
 
     // Initialize shared mem
+    __shared__ scalar_t A_tile[BLOCK_SIZE * BLOCK_SIZE];
     // The first dimension of the B_tile needs to be increased to prevent bank
     // conflicts in B_tile load.
+    __shared__ scalar_t B_tile[(BLOCK_SIZE + 1) * BLOCK_SIZE];
 
+    // Initialize thread-local output (register)
+    scalar_t accumulator = 0;
 
     for (int tile_i = tile_pos.x; tile_i < grid_size; tile_i++) {
         const int i = tile_i * BLOCK_SIZE + ty;
@@ -330,8 +322,9 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
     const int row = tile_pos.y * BLOCK_SIZE + tx;
     if (row <= col && col < size && row < size) {
         out[row + col * out_stride] = accumulator;
-    }*/
+    }
 }
+
 
 template<typename scalar_t>
 __global__
@@ -446,11 +439,9 @@ torch::Tensor lauum_upper(const int n, const torch::Tensor &A, const int lda, to
     // Setup CUDA grid dimensions:
     // grid is 1D, so that we can only consider triangularly-appropriate tiles
     // blocks are 2D, with a fixed block size
-    //const int grid_height = ceildiv(size, BLOCK_SIZE);
     const int grid_height = ceildiv(size, BLK_N);
 
     const dim3 dimGrid(grid_height * (grid_height + 1) / 2, 1);
-    //const dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
     const dim3 dimBlock(DIM_COMP_X, DIM_COMP_Y);
 
     AT_DISPATCH_FLOATING_TYPES(scalar_type, "cuda_lauum", [&] {
@@ -460,7 +451,7 @@ torch::Tensor lauum_upper(const int n, const torch::Tensor &A, const int lda, to
         #ifdef DEBUG
             cudaEventRecord(start);
         #endif
-        lauum_upper_ker_tri_tiled<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
+        lauum_upper_ker_tri_tiled_adv<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
             A.data_ptr<scalar_t>(), B.data_ptr<scalar_t>(), size, in_stride, out_stride, grid_height);
         #ifdef DEBUG
             cudaEventRecord(stop);
@@ -474,7 +465,7 @@ torch::Tensor lauum_upper(const int n, const torch::Tensor &A, const int lda, to
     #ifdef DEBUG
         long long int num_ops = (2 * (long long)size * (long long)(size + 1) * (long long)(size + 2)) / 6;
         printf("num-ops: %ld  -  Flops: %.4f\n", num_ops, num_ops / (elapsed / 1000.0));
-        printf("lauum_upper_ker_tri_tiled - N=%d, time=%.4fs - GFlops=%.2fGF/s\n",
+        printf("lauum_upper_ker_tri_tiled_adv - N=%d, time=%.4fs - GFlops=%.2fGF/s\n",
                size, elapsed / 1000, (num_ops / (elapsed / 1000.0)) / 1e9);
     #endif
     return B;

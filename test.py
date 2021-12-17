@@ -108,6 +108,7 @@ if __name__ == "__main__":
     dt = torch.float64
     fn = cuda_lauum_lower
 
+    # Just a sanity check that new implementations don't break
     run(1000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_upper, lower=False)
     #sys.exit()
 
@@ -122,41 +123,3 @@ if __name__ == "__main__":
     run(10000, repeat=5, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
     time.sleep(1)
     run_gemm(10000, repeat=5, dtype=torch.float32)
-    #run(10000, repeat=1, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
-    #time.sleep(1)
-
-    if False:
-        for s in [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 10000]:
-            run(s, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
-        print()
-        for s in [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 10000]:
-            run(s, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower, lower=True)
-            run(s, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_tiled, lower=True)
-
-    #run(1000, repeat=1, compare_results=True, dtype=torch.float64, fn=fn)
-    #for s in [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000]:
-    #    run(s, repeat=6, compare_results=False, dtype=dt, fn=fn)
-
-    if False:
-        #run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_upper, lower=False)
-        #run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower)
-        run_gemm(5000, repeat=3, dtype=torch.float32)
-        run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
-        run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower)
-        run_gemm(10000, repeat=3, dtype=torch.float32)
-        run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_upper, lower=False)
-        run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower)
-    if False:
-        #run(4, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
-        #run(50, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
-        run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower)
-        run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_basic)
-        run(5000, repeat=1, compare_results=True, dtype=torch.float64, fn=cuda_lauum_lower_square_tiled)
-        run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower)
-        run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_basic)
-        run(5000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_tiled)
-        run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower)
-        run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_basic)
-        run(10000, repeat=3, compare_results=False, dtype=torch.float32, fn=cuda_lauum_lower_square_tiled)
-        #run(20000, repeat=3, compare_results=False, dtype=torch.float32)
-        #run(30000, repeat=3, compare_results=False, dtype=torch.float32)
