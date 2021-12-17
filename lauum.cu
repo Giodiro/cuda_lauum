@@ -106,8 +106,6 @@ void lauum_lower_ker_sq_basic(const scalar_t* __restrict__ in,
 #define DIM_COMP_X 16
 #define DIM_COMP_Y DIM_COMP_X
 #define THR_N ( BLK_N / DIM_COMP_X )
-#define RC_X(val)  (val / i)
-#define RC_Y(val)  (val % i)
 
 
 template<typename scalar_t>
@@ -128,11 +126,9 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
     // Multiplication is between two matrices of shape N, K.
     // The first dimension (N) is also referred to as X, the second (K=Y).
     __shared__ scalar_t sA[BLK_K][BLK_N];
-    //__shared__ scalar_t sB[BLK_N][BLK_K + 1];
     __shared__ scalar_t sB[BLK_K][BLK_N + 1];
 
-    //scalar_t rC[THR_N][THR_N];  // 36
-    scalar_t rC[THR_N * THR_N];
+    scalar_t rC[THR_N * THR_N]; // 36
     scalar_t rA[THR_N];         // 6
     scalar_t rB[THR_N];         // 6
 
@@ -150,8 +146,10 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
     const int tid_y = tid_global / DIM_READ_X;
 
     int i, j, k, ki;
-    int ii, jj;
-    int col, row_a, row_b;
+    int jj;
+    int col;
+    const int row_a = p.x * BLK_N + tid_x;
+    const int row_b = p.y * BLK_N + tid_x;
 
     // Zero-out rC
     # pragma unroll
@@ -163,22 +161,18 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
     col = p.y * BLK_N + tid_y;
     # pragma unroll
     for (i = 0; i < BLK_K; i += DIM_READ_Y) {
-        row_a = p.x * BLK_N + tid_x;
-        row_b = p.y * BLK_N + tid_x;
         # pragma unroll
         for (j = 0; j < BLK_N; j += DIM_READ_X) {
-            if (row_a <= col) {
-                sA[tid_y + i][tid_x + j] = in[min(row_a + col * in_stride, size * in_stride - 1)];
+            if (row_a + j <= col) {
+                sA[tid_y + i][tid_x + j] = in[min(row_a + j + col * in_stride, size * in_stride - 1)];
             } else {
                 sA[tid_y + i][tid_x + j] = 0;
             }
-            if (row_b <= col) {
-                sB[tid_y + i][tid_x + j] = in[min(row_b + col * in_stride, size * in_stride - 1)];
+            if (row_b + j <= col) {
+                sB[tid_y + i][tid_x + j] = in[min(row_b + j + col * in_stride, size * in_stride - 1)];
             } else {
                 sB[tid_y + i][tid_x + j] = 0;
             }
-            row_a += DIM_READ_X;
-            row_b += DIM_READ_X;
         }
         col += DIM_READ_Y;
     }
@@ -187,22 +181,18 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
     for (k = p.y * BLK_N + BLK_K; k < size; k += BLK_K) {
         // Load global -> registers
         col = k + tid_y;
-        row_a = p.x * BLK_N + tid_x;
-        row_b = p.y * BLK_N + tid_x;
         # pragma unroll
-        for (j = 0; j < BLK_N / DIM_READ_X; j++) {
-            if (row_a <= col) {
-                ra[j] = in[min(row_a + col * in_stride, size * in_stride - 1)];
+        for (j = 0, jj = 0; jj < BLK_N; j++, jj += DIM_READ_X) {
+            if (row_a + jj <= col) {
+                ra[j] = in[min(row_a + jj + col * in_stride, size * in_stride - 1)];
             } else {
                 ra[j] = 0;
             }
-            if (row_b <= col) {
-                rb[j] = in[min(row_b + col * in_stride, size * in_stride - 1)];
+            if (row_b + jj <= col) {
+                rb[j] = in[min(row_b + jj + col * in_stride, size * in_stride - 1)];
             } else {
                 rb[j] = 0;
             }
-            row_a += DIM_READ_X;
-            row_b += DIM_READ_X;
         }
         // Multiply
         # pragma unroll
@@ -223,7 +213,7 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
         __syncthreads();
         // Load registers -> shared
         # pragma unroll
-        for (j = 0, jj = 0; j < BLK_N; j+= DIM_READ_X, jj++) {
+        for (j = 0, jj = 0; j < BLK_N; j += DIM_READ_X, jj++) {
             sA[tid_y][tid_x + j] = ra[jj];
             sB[tid_y][tid_x + j] = rb[jj];
         }
@@ -247,11 +237,9 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
         }
     }
 
-    row_a = p.x * BLK_N + tid_x;
     col = p.y * BLK_N + tid_y;
     # pragma unroll
     for (i = 0; i < THR_N * THR_N; i++) {
-        // TODO: Checks for overwrite
         if ((row_a + (i / THR_N) * DIM_COMP_X) <= (col + (i % THR_N) * DIM_COMP_Y) && (col + (i % THR_N) * DIM_COMP_Y) < size) {
             out[row_a + (i / THR_N) * DIM_COMP_X + (col + (i % THR_N) * DIM_COMP_Y) * out_stride] = rC[i];
         }
