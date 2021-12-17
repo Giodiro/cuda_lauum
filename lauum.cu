@@ -128,15 +128,16 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
     // Multiplication is between two matrices of shape N, K.
     // The first dimension (N) is also referred to as X, the second (K=Y).
     __shared__ scalar_t sA[BLK_K][BLK_N];
-    __shared__ scalar_t sB[BLK_N][BLK_K + 1];
+    //__shared__ scalar_t sB[BLK_N][BLK_K + 1];
+    __shared__ scalar_t sB[BLK_K][BLK_N + 1];
 
     //scalar_t rC[THR_N][THR_N];  // 36
     scalar_t rC[THR_N * THR_N];
     scalar_t rA[THR_N];         // 6
     scalar_t rB[THR_N];         // 6
 
-    scalar_t ra[BLK_K / DIM_READ_Y][BLK_N / DIM_READ_X];  // 6
-    scalar_t rb[BLK_K / DIM_READ_Y][BLK_N / DIM_READ_X];  // 6
+    scalar_t ra[BLK_N / DIM_READ_X];  // 6
+    scalar_t rb[BLK_N / DIM_READ_X];  // 6
 
     // Total work (output size) of the thread block is BLK_N * BLK_N, but
     // there are only DIM_COMP_X * DIM_COMP_Y threads. So each thread works on
@@ -172,9 +173,9 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
                 sA[tid_y + i][tid_x + j] = 0;
             }
             if (row_b <= col) {
-                sB[tid_x + j][tid_y + i] = in[min(row_b + col * in_stride, size * in_stride - 1)];
+                sB[tid_y + i][tid_x + j] = in[min(row_b + col * in_stride, size * in_stride - 1)];
             } else {
-                sB[tid_x + j][tid_y + i] = 0;
+                sB[tid_y + i][tid_x + j] = 0;
             }
             row_a += DIM_READ_X;
             row_b += DIM_READ_X;
@@ -186,26 +187,22 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
     for (k = p.y * BLK_N + BLK_K; k < size; k += BLK_K) {
         // Load global -> registers
         col = k + tid_y;
+        row_a = p.x * BLK_N + tid_x;
+        row_b = p.y * BLK_N + tid_x;
         # pragma unroll
-        for (i = 0; i < BLK_K / DIM_READ_Y; i++) {
-            row_a = p.x * BLK_N + tid_x;
-            row_b = p.y * BLK_N + tid_x;
-            # pragma unroll
-            for (j = 0; j < BLK_N / DIM_READ_X; j++) {
-                if (row_a <= col) {
-                    ra[i][j] = in[min(row_a + col * in_stride, size * in_stride - 1)];
-                } else {
-                    ra[i][j] = 0;
-                }
-                if (row_b <= col) {
-                    rb[i][j] = in[min(row_b + col * in_stride, size * in_stride - 1)];
-                } else {
-                    rb[i][j] = 0;
-                }
-                row_a += DIM_READ_X;
-                row_b += DIM_READ_X;
+        for (j = 0; j < BLK_N / DIM_READ_X; j++) {
+            if (row_a <= col) {
+                ra[j] = in[min(row_a + col * in_stride, size * in_stride - 1)];
+            } else {
+                ra[j] = 0;
             }
-            col += DIM_READ_Y;
+            if (row_b <= col) {
+                rb[j] = in[min(row_b + col * in_stride, size * in_stride - 1)];
+            } else {
+                rb[j] = 0;
+            }
+            row_a += DIM_READ_X;
+            row_b += DIM_READ_X;
         }
         // Multiply
         # pragma unroll
@@ -214,9 +211,7 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
             # pragma unroll
             for (i = 0; i < THR_N; i++) {
                 rA[i] = sA[ki][i * DIM_COMP_X + tx];
-                rB[i] = sB[i * DIM_COMP_Y + ty][ki];
-                //printf("(%d,%d) Loading rA[%d] from sA[%d][%d] = %f\n", tx, ty, i, ki, i * DIM_COMP_X + tx, rA[i]);
-                //printf("(%d,%d) Loading rB[%d] from sB[%d][%d] = %f\n", tx, ty, i, i * DIM_COMP_Y + ty, ki, rB[i]);
+                rB[i] = sB[ki][i * DIM_COMP_Y + ty];
             }
 
             // Compute
@@ -227,35 +222,26 @@ void lauum_upper_ker_tri_tiled(const scalar_t* __restrict__ in,
         }
         __syncthreads();
         // Load registers -> shared
-        //# pragma unroll
-        //for (i = 0; i < BLK_K / DIM_READ_Y; i++) {
         # pragma unroll
-        for (i = 0, ii = 0; i < BLK_K; i += DIM_READ_Y, ii++) {
-            //# pragma unroll
-            //for (j = 0; j < BLK_N / DIM_READ_X; j++) {
-            # pragma unroll
-            for (j = 0, jj = 0; j < BLK_N; j+= DIM_READ_X, jj++) {
-                //sA[tid_y + i * DIM_READ_Y][tid_x + j * DIM_READ_X] = ra[i][j];
-                //sB[tid_x + j * DIM_READ_X][tid_y + i * DIM_READ_Y] = rb[i][j];
-                sA[tid_y + i][tid_x + j] = ra[ii][jj];
-                sB[tid_x + j][tid_y + i] = rb[ii][jj];
-            }
+        for (j = 0, jj = 0; j < BLK_N; j+= DIM_READ_X, jj++) {
+            sA[tid_y][tid_x + j] = ra[jj];
+            sB[tid_y][tid_x + j] = rb[jj];
         }
         __syncthreads();
     }
     // Multiply last block
     # pragma unroll
-    for (ki = 0; ki < size - k + BLK_K; ki++) {
+    for (ki = 0; ki < BLK_K; ki++) {
+        if (ki >= size - k + BLK_K)
+            break;
         // shared -> registers
-        # pragma unroll 6
+        # pragma unroll
         for (i = 0; i < THR_N; i++) {
             rA[i] = sA[ki][i * DIM_COMP_X + tx];
-            rB[i] = sB[i * DIM_COMP_Y + ty][ki];
-            //printf("+(%d,%d) Loading rA[%d] from sA[%d][%d] = %f\n", tx, ty, i, ki, i * DIM_COMP_X + tx, rA[i]);
-            //printf("+(%d,%d) Loading rB[%d] from sB[%d][%d] = %f\n", tx, ty, i, i * DIM_COMP_Y + ty, ki, rB[i]);
+            rB[i] = sB[ki][i * DIM_COMP_Y + ty];
         }
         // Compute
-        # pragma unroll 36
+        # pragma unroll
         for (i = 0; i < THR_N * THR_N; i++) {
             rC[i] += rA[i / THR_N] * rB[i % THR_N];
         }
