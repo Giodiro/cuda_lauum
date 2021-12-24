@@ -105,6 +105,52 @@ void lauum_lower_ker_sq_tiled(const scalar_t* __restrict__ in,
     }
 }
 
+#define FULL_MASK 0xffffffff
+#define LIN_WARP_SIZE 32
+#define LIN_BLOCK_SIZE 1024
+
+template<typename scalar_t>
+__global__
+void lauum_upper_ker_tri_linear(const scalar_t* __restrict__ in,
+                                scalar_t* __restrict__ out,
+                                const int size,
+                                const int in_stride,
+                                const int out_stride,
+                                const int grid_size) {
+    const int2 p = tri_index_lower(blockIdx.x * LIN_WARP_SIZE);  // lower and upper are mixed up.
+    const int tx = threadIdx.x;
+
+    __shared__ scalar_t sA[LIN_BLOCK_SIZE];
+
+    int i, j, k;
+    int col_offset = tx % LIN_WARP_SIZE;   // alternatively: thread ID
+    int warp_offset = tx / LIN_WARP_SIZE;  // alternatively: warp ID
+    int row = p.x;
+    int col = p.y + warp_offset;
+
+    for (i = p.y; i < size; i += LIN_BLOCK_SIZE) {  // TODO: Stopping condition here is incorrect
+        sA[tx] = in[p.x * in_stride + i + tx];
+        __syncwarp()
+        #pragma unroll
+        for (j = 0; j < LIN_BLOCK_SIZE; j += LIN_BLOCK_SIZE / LIN_WARP_SIZE) {
+            rB = in[(p.y + warp_offset) * in_stride + i + j + col_offset];
+            rC += sA[j + col_offset + warp_offset] * rB
+        }
+    }
+    // Last block
+
+    // Reduction
+    #pragma unroll
+    for (i = 16; i > 0; i /= 2) {
+        rC += __shfl_down_sync(FULL_MASK, rC, i);
+    }
+
+    // Write-back
+    if (col_offset == 0) {
+        out[row * out_stride + col] = rC;
+    }
+}
+
 
 /*
  * Definitions for lauum_upper_ker_tri_tiled
@@ -422,6 +468,32 @@ torch::Tensor lauum_lower_square_basic(const int n, const torch::Tensor &A, cons
     });
     return B;
 }
+
+
+torch::Tensor lauum_upper_lin(const int n, const torch::Tensor &A, const int lda, torch::Tensor &B, const int ldb) {
+    const auto scalar_type = A.scalar_type();
+    const auto size = n;
+    const auto in_stride = lda;
+    const auto out_stride = ldb;
+    lauum_upper_ker_tri_linear
+
+    // Setup CUDA grid dimensions:
+    // grid is 1D, so that we can only consider triangularly-appropriate tiles
+    const int grid_height = ceildiv(size, LIN_WARP_SIZE);
+
+    const dim3 dimGrid(grid_height * (grid_height + 1) / 2, 1);
+    const dim3 dimBlock(LIN_BLOCK_SIZE, 1);
+
+    AT_DISPATCH_FLOATING_TYPES(scalar_type, "cuda_lauum", [&] {
+        at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
+        at::DeviceGuard g(A.device());
+
+        lauum_upper_ker_tri_linear<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
+            A.data_ptr<scalar_t>(), B.data_ptr<scalar_t>(), size, in_stride, out_stride, grid_height);
+    });
+    return B;
+}
+
 
 torch::Tensor lauum_upper(const int n, const torch::Tensor &A, const int lda, torch::Tensor &B, const int ldb) {
     // TODO: Consistency checks
